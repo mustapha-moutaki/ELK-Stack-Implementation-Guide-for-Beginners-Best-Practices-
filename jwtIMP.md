@@ -385,3 +385,63 @@ public class AuthController {
     }
 }
 ```
+
+
+Here is the **Golden Template Order** to follow in any Spring Boot JWT project:
+
+### Phase 1: Foundation (Data & Settings)
+*Build these first because they don't depend on anything else.*
+
+1.  **`application.yml`**
+    *   **Why:** Define your Secret Key and Expiration times so you can inject them later.
+2.  **`model/User.java`** & **`model/RefreshToken.java`**
+    *   **Why:** You can't create repositories or services without the database entities.
+3.  **`repository/UserRepository.java`** & **`repository/RefreshTokenRepository.java`**
+    *   **Why:** You need these interfaces to fetch data in your services.
+4.  **`dto/Auth/*.java`** (Request/Response classes)
+    *   **Why:** Define the structure of your JSON inputs/outputs so your Services know what data to expect.
+
+---
+
+### Phase 2: Security Utilities & Logic
+*Build these next. They use the foundation to do the actual work.*
+
+5.  **`security/CustomUserDetails.java`**
+    *   **Why:** Spring Security doesn't know your `User` entity. This adapter bridges the gap.
+6.  **`security/JwtService.java`**
+    *   **Why:** The utility tool to generate and validate tokens. It uses the `application.yml` values.
+7.  **`service/jwtAuth/RefreshTokenService.java`**
+    *   **Why:** Handles the specific logic for creating and rotating the long-lived tokens using the Repositories.
+8.  **`config/ApplicationConfig.java`**
+    *   **Why:** Configures the `PasswordEncoder` and `AuthenticationManager` beans that the main Auth service needs.
+9.  **`service/jwtAuth/AuthenticationService.java`**
+    *   **Why:** The "Brain". It brings everything together (UserRepo, JwtService, RefreshTokenService) to register and login users.
+
+---
+
+### Phase 3: Wiring & Infrastructure
+*Now you connect the logic to the HTTP Web Layer.*
+
+10. **`security/JwtAuthenticationFilter.java`**
+    *   **Why:** The "Gatekeeper". It uses `JwtService` and `UserDetailsService` to check headers before the request hits the controller.
+11. **`config/SecurityConfiguration.java`**
+    *   **Why:** The "Rulebook". It tells Spring to use your Filter, disable CSRF, and allow access to `/api/auth/**`.
+
+---
+
+### Phase 4: Exposure (The API)
+*The final step.*
+
+12. **`controller/auth/AuthController.java`**
+    *   **Why:** The "Door". It simply receives the Request DTOs, calls the `AuthenticationService`, and returns the Response DTOs.
+
+---
+
+### 🧠 Quick Mental Check
+If you are ever confused about the order, just ask yourself:
+**"Can I write this class yet?"**
+
+*   *Can I write the Controller?* **No**, it needs the Service.
+*   *Can I write the Service?* **No**, it needs the Repository.
+*   *Can I write the Repository?* **No**, it needs the Entity.
+*   *Can I write the Entity?* **Yes! Start here.**
