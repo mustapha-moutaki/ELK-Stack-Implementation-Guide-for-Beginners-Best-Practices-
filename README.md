@@ -1,418 +1,243 @@
-Here is a comprehensive, reorganized, and beginner-friendly guide. I have structured this as a **`README.md`** file. It follows a "Big Steps" (Architecture/Concepts) and "Small Steps" (Implementation) approach, ensuring you understand *what* you are building while giving you copy-paste ready code.
 
 ***
 
-# 🚀 Ultimate Beginner's Guide to ELK Stack with Spring Boot
+#  The "It Finally Works" ELK Stack Guide
 
-This guide provides a production-ready, best-practice approach to monitoring a Spring Boot application using the Elastic Stack (Elasticsearch, Logstash, Kibana) running on Docker.
+This is a simple guide to connecting your **Spring Boot** app to **Elasticsearch, Logstash, and Kibana**. We use **Filebeat** to grab the logs because it's lightweight and fast.
 
----
+## 📂 1. The Setup (Folder Structure)
 
-## 📚 Table of Contents
-1.  **The Big Picture** (Architecture & Concepts)
-2.  **Project Structure**
-3.  **Step 1: Docker Infrastructure** (The Server Side)
-4.  **Step 2: Spring Boot Configuration** (The Application Side)
-5.  **Step 3: Running & Verification**
-6.  **Step 4: Using Kibana**
-7.  **Troubleshooting & Cheatsheet**
-
----
-
-## 1. 🌍 The Big Picture (Architecture)
-
-Before writing code, understand how data flows. We are building a pipeline where your application pushes structured logs to a visualization dashboard.
-
-```mermaid
-graph LR
-    A[Spring Boot App] -- TCP Port 5000 --> B[Logstash]
-    B -- Process & Filter --> C[Elasticsearch]
-    C -- Store Data --> C
-    D[Kibana] -- Read Port 9200 --> C
-    User -- Browser Port 5601 --> D
-```
-
-*   **Spring Boot:** Generates logs in JSON format.
-*   **Logstash (The Plumber):** Receives logs, processes them (adds timestamps, filters data), and ships them to the database.
-*   **Elasticsearch (The Database):** A search engine that stores logs.
-*   **Kibana (The Dashboard):** A web UI to visualize and search the logs.
-
----
-
-## 2. 📁 Project Structure
-
-Create a folder named `elk-monitoring`. Inside, create the following structure exactly as shown.
+Make a folder called `application-docker`. Put all these files inside it.
 
 ```text
-elk-monitoring/
-│
-├── docker/                          # Infrastructure (ELK)
-│   ├── docker-compose.yml           # Main orchestrator
-│   │
-│   ├── elasticsearch/
-│   │   └── config/
-│   │       └── elasticsearch.yml    # Database settings
-│   │
-│   ├── logstash/
-│   │   ├── config/
-│   │   │   └── logstash.yml        # Pipeline settings
-│   │   └── pipeline/
-│   │       └── logstash.conf       # The logic (Input -> Output)
-│   │
-│   └── kibana/
-│       └── config/
-│           └── kibana.yml          # Dashboard settings
-│
-└── spring-boot-app/                 # Application
-    ├── pom.xml
-    ├── src/
-    │   ├── main/
-    │   │   ├── resources/
-    │   │   │   ├── application.yml
-    │   │   │   └── logback-spring.xml  # Crucial for JSON formatting
-    │   │   └── java/.../DemoApplication.java
+/application-docker
+├── docker-compose.yml      # The boss file (runs everything)
+├── filebeat.yml            # The log fetcher (the one that was broken)
+├── logstash.conf           # The log processor
+└── logstash.yml            # System settings
 ```
 
 ---
 
-## 3. 🐳 Step 1: Docker Infrastructure
+## 🛠 2. The Configuration Files
 
-This section sets up the servers. We use Docker Compose to spin up all three ELK services at once.
-
-### A. The `docker-compose.yml`
-*Location: `docker/docker-compose.yml`*
-
-This file uses **Healthchecks** (Best Practice) to ensure services start in the correct order (ES -> Logstash -> Kibana).
+### A. docker-compose.yml
+This file starts all the servers.
 
 ```yaml
 version: '3.8'
 
 services:
-  # 1. ELASTICSEARCH - The Database
+  # --- The Database (Brain) ---
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
     container_name: elasticsearch
     environment:
-      - node.name=elasticsearch
-      - cluster.name=es-docker-cluster
-      - discovery.type=single-node
-      - bootstrap.memory_lock=true
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"  # Limit memory usage
-      - xpack.security.enabled=false      # Disabled for beginner simplicity
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
-      - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml:ro
+      - discovery.type=single-node         # Just one node, keep it simple
+      - xpack.security.enabled=false       # No password needed (for dev)
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m     # Don't let Java eat all my RAM
     ports:
       - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
-      - elk
-    healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9200 >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      - elk-net
 
-  # 2. LOGSTASH - The Pipeline
+  # --- The Middle Man ---
   logstash:
     image: docker.elastic.co/logstash/logstash:8.11.1
     container_name: logstash
-    environment:
-      - LS_JAVA_OPTS=-Xmx256m -Xms256m
     volumes:
-      - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
-      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      # Read the config files from my computer
+      - ./logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
     ports:
-      - "5000:5000"       # TCP port for Spring Boot
-      - "5000:5000/udp"
-      - "9600:9600"
-    networks:
-      - elk
+      - "5000:5000"
     depends_on:
-      elasticsearch:
-        condition: service_healthy
+      - elasticsearch
+    networks:
+      - elk-net
 
-  # 3. KIBANA - The Dashboard
+  # --- The Dashboard (UI) ---
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.1
     container_name: kibana
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-    volumes:
-      - ./kibana/config/kibana.yml:/usr/share/kibana/config/kibana.yml:ro
     ports:
       - "5601:5601"
-    networks:
-      - elk
     depends_on:
-      elasticsearch:
-        condition: service_healthy
+      - elasticsearch
+    networks:
+      - elk-net
 
-networks:
-  elk:
-    driver: bridge
+  # --- The Log Shipper (Problem Child) ---
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.1
+    container_name: filebeat
+    user: root  # Run as root so we don't get 'Permission Denied' errors
+    # -e is crucial! It lets us see logs in the console to debug
+    command: [ "-e", "--strict.perms=false" ] 
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      # Give access to Docker logs on the host
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - logstash
+    networks:
+      - elk-net
 
 volumes:
   elasticsearch-data:
+
+networks:
+  elk-net:
+    driver: bridge
 ```
 
-### B. Configuration Files
+### B. filebeat.yml
+This tells Filebeat *where* to look. We use the "Catch-All" method because it actually works.
 
-**1. Elasticsearch Config**
-*Location: `docker/elasticsearch/config/elasticsearch.yml`*
 ```yaml
-cluster.name: "docker-cluster"
-network.host: 0.0.0.0
+filebeat.inputs:
+  - type: container
+    enabled: true
+    paths:
+      # Look everywhere. Don't be blind.
+      - /var/lib/docker/containers/*/*.log
+    processors:
+      # Add container names so I know which app crashed
+      - add_docker_metadata:
+          host: "unix:///var/run/docker.sock"
+
+# Don't spam my disk with filebeat's own logs
+logging.level: info
+logging.to_files: false
+
+# Send everything to Logstash, not Elasticsearch directly
+output.logstash:
+  hosts: ["logstash:5000"]
 ```
 
-**2. Logstash Settings**
-*Location: `docker/logstash/config/logstash.yml`*
-```yaml
-http.host: "0.0.0.0"
-xpack.monitoring.elasticsearch.hosts: [ "http://elasticsearch:9200" ]
-```
+### C. logstash.conf
+This receives the data and names the index.
 
-**3. Logstash Pipeline (CRITICAL)**
-*Location: `docker/logstash/pipeline/logstash.conf`*
-This tells Logstash how to handle the data. We use `json_lines` codec to read the logs sent by Spring Boot.
-```conf
+```ruby
 input {
-  tcp {
+  # Listen for Filebeat on port 5000
+  beats {
     port => 5000
-    codec => json_lines
   }
 }
 
 filter {
-  # Add specific tags or parse dates if needed here
+  # If I need to change data later, I'll do it here. 
+  # For now, just pass it through.
 }
 
 output {
   elasticsearch {
-    hosts => ["elasticsearch:9200"]
-    index => "springboot-logs-%{+YYYY.MM.dd}"
+    hosts => ["http://elasticsearch:9200"]
+    # Make the index name match my project (supplychainx-DATE)
+    index => "supplychainx-%{+YYYY.MM.dd}" 
   }
-  stdout { codec => rubydebug } # Debugging: Print logs to Docker console
+  
+  # Print to console so I can see if it's actually alive
+  stdout { codec => rubydebug }
 }
 ```
 
-**4. Kibana Config**
-*Location: `docker/kibana/config/kibana.yml`*
-```yaml
-server.name: kibana
-server.host: "0.0.0.0"
-elasticsearch.hosts: [ "http://elasticsearch:9200" ]
-monitoring.ui.container.elasticsearch.enabled: true
-```
-
----
-
-## 4. ☕ Step 2: Spring Boot Configuration
-
-We need to tell Spring Boot to stop just printing text to the console and start sending JSON objects to Logstash.
-
-### A. Dependencies (`pom.xml`)
-We use `logstash-logback-encoder`. This library is the standard best practice for Java logging.
-
-```xml
-<dependencies>
-    <!-- Standard Web Starter -->
-    <dependency>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-web</artifactId>
-    </dependency>
-
-    <!-- THE BRIDGE: Logback to Logstash Encoder -->
-    <dependency>
-        <groupId>net.logstash.logback</groupId>
-        <artifactId>logstash-logback-encoder</artifactId>
-        <version>7.4</version>
-    </dependency>
-</dependencies>
-```
-
-### B. Application Config (`application.yml`)
-*Location: `src/main/resources/application.yml`*
+### D. logstash.yml
+System settings.
 
 ```yaml
-spring:
-  application:
-    name: my-super-app
-
-server:
-  port: 8080
-
-# Define where Logstash is listening
-logstash:
-  host: localhost
-  port: 5000
+http.host: "0.0.0.0"            # Listen on all interfaces
+xpack.monitoring.enabled: false # Turn off extra monitoring features
 ```
 
-### C. Logging Config (`logback-spring.xml`)
-*Location: `src/main/resources/logback-spring.xml`*
+### E. Spring Boot (`application.yml`)
+Make your Java app talk in JSON so ELK understands it easily.
 
-This is the "magic" file. It defines an `appender`. It sends logs to the console (for you) and to Logstash (for Kibana) simultaneously.
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<configuration>
-    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
-    
-    <!-- Appender 1: Console (Human Readable) -->
-    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
-        </encoder>
-    </appender>
-
-    <!-- Appender 2: Logstash (JSON format via TCP) -->
-    <appender name="LOGSTASH" class="net.logstash.logback.appender.LogstashTcpSocketAppender">
-        <!-- Destination -->
-        <destination>localhost:5000</destination>
-        
-        <!-- Keep connection alive -->
-        <keepAliveDuration>5 minutes</keepAliveDuration>
-        
-        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <!-- Add custom fields to every log -->
-            <customFields>{"app_name":"my-super-app", "env":"dev"}</customFields>
-        </encoder>
-    </appender>
-
-    <!-- Root Logger -->
-    <root level="INFO">
-        <appender-ref ref="CONSOLE" />
-        <appender-ref ref="LOGSTASH" />
-    </root>
-</configuration>
-```
-
-### D. Java Controller (Generate Logs)
-*Location: `src/main/java/.../UserController.java`*
-
-```java
-package com.example.demo.controller;
-
-import org.slf4j.Logger; // Use SLF4J (Best Practice interface)
-import org.slf4j.LoggerFactory;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RestController;
-
-@RestController
-public class UserController {
-
-    // 1. Define the logger
-    private static final Logger logger = LoggerFactory.getLogger(UserController.class);
-
-    @GetMapping("/api/hello")
-    public String hello() {
-        // 2. Log an info message
-        logger.info("👋 Hello endpoint was called!");
-        return "Hello World";
-    }
-
-    @GetMapping("/api/error")
-    public String triggerError() {
-        try {
-            int i = 1 / 0; // Simulate crash
-        } catch (Exception e) {
-            // 3. Log an error with stack trace
-            logger.error("🔥 Something went wrong: {}", e.getMessage(), e);
-        }
-        return "Check your Kibana!";
-    }
-}
+```yaml
+logging:
+  level:
+    root: INFO
+  pattern:
+    # Print JSON. It's ugly for humans but computers love it.
+    console: '{"@timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}", "level":"%p", "logger":"%c", "message":"%m"}'
 ```
 
 ---
 
-## 5. 🏃 Step 3: Running & Verification
+## 🏃 3. How to Run It
 
-### 1. Start Docker (Infrastructure)
-Open your terminal in the `docker` folder.
+1.  **Start everything:**
+    ```bash
+    docker-compose up -d
+    ```
 
-```bash
-cd docker
-docker-compose up -d
-```
-*Wait about 60 seconds.* Use `docker-compose ps` to verify all 3 services state is "Up" or "healthy".
-
-### 2. Start Spring Boot (Application)
-Open a new terminal in the `spring-boot-app` folder.
-
-```bash
-mvn spring-boot:run
-```
-
-### 3. Generate Traffic
-Open your browser or Postman and hit:
-*   `http://localhost:8080/api/hello` (Refresh 5 times)
-*   `http://localhost:8080/api/error` (Refresh 2 times)
+2.  **Wait a minute.** ElasticSearch and Kibana are heavy. They take time to wake up.
 
 ---
 
-## 6. 📊 Step 4: Using Kibana
+## 🧪 4. Sanity Check (Is Elasticsearch actually alive?)
 
-This is where the magic happens.
+Before we blame Filebeat or the logs, let's try to manually force a fake log into the database. If this fails, the whole server is dead.
 
-1.  **Open Kibana:** Go to `http://localhost:5601`.
-2.  **Access Management:**
-    *   Click the "Hamburger Menu" (Top Left) -> **Stack Management**.
-    *   Click **Data Views** (or Index Patterns in older versions).
-    *   Click **Create data view**.
-3.  **Define Pattern:**
-    *   Name: `springboot-logs-*` (This matches the output in `logstash.conf`).
-    *   Timestamp field: Select `@timestamp`.
-    *   Click **Save data view**.
-4.  **View Logs:**
-    *   Click Menu -> **Discover**.
-    *   You will see your Java logs! You can filter by `level: ERROR` or search for "Hello".
+**Step 1: Push a fake log manually**
+```bash
+docker exec -it elasticsearch curl -X POST "http://localhost:9200/supplychainx-logs/_doc" -H 'Content-Type: application/json' -d'
+{
+  "timestamp": "2025-12-17T14:00:00Z",
+  "message": "Test log entry"
+}'
+```
+
+**Step 2: Check if it arrived**
+```bash
+docker exec -it elasticsearch curl -s 'http://localhost:9200/_cat/indices?v'
+```
+
+**Result:**
+*   If you see `supplychainx-logs` in the list -> **Good.** Database is working.
+*   If you get "Connection refused" -> **Bad.** Elasticsearch is crashed (probably out of RAM).
 
 ---
 
-## 7. 🆘 Troubleshooting & Cheatsheet
+## 🕵️ 5. Verify the Real Pipeline (Filebeat)
 
-### Common Issues
+Now check if the **real** logs are coming through.
 
-1.  **Elasticsearch crashes immediately (Exit Code 137 or 78):**
-    *   *Cause:* Not enough RAM or Docker limit.
-    *   *Fix:* Ensure Docker Desktop has at least 4GB RAM allocated.
-
-2.  **Logstash "Connection Refused":**
-    *   *Cause:* Elasticsearch isn't fully ready yet.
-    *   *Fix:* Wait. The `depends_on` in docker-compose helps, but ES takes time. Check `docker logs elasticsearch`.
-
-3.  **No logs in Kibana:**
-    *   *Check 1:* Did you create the Data View?
-    *   *Check 2:* Is `logback-spring.xml` sending to `localhost:5000`?
-    *   *Check 3:* Is Logstash printing logs? Run `docker logs -f logstash`. If you see JSON there, the connection is working.
-
-### Useful Commands
-
+Run the check command again:
 ```bash
-# Start everything in background
-docker-compose up -d
-
-# Stop everything and remove volumes (Fresh start)
-docker-compose down -v
-
-# View logs of specific container
-docker logs -f logstash
-docker logs -f elasticsearch
-
-# Check Logstash Port
-telnet localhost 5000
+docker exec -it elasticsearch curl -s 'http://localhost:9200/_cat/indices?v'
 ```
 
-### Best Practices Checklist
-*   ✅ **Always use SLF4J:** `LoggerFactory.getLogger(...)`
-*   ✅ **Use Asynchronous Logging:** In production, wrap the `LogstashTcpSocketAppender` in an `<appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">` to prevent logging from slowing down your app.
-*   ✅ **Structured Logging:** Don't just log strings (`"User logged in"`). Log data (`"User logged in", key=value`).
-*   ✅ **Security:** This guide disables security (`xpack.security.enabled=false`) for ease of learning. In production, enable this and set up passwords.
+**If it works:**
+You will see `supplychainx-202X.XX.XX` (with today's date) in the list.
 
+**If it's empty:**
+Check Filebeat logs immediately:
+```bash
+docker logs filebeat --tail 10
+```
+*(You are looking for "Harvester started". If you see "Enabled inputs: 0", you messed up the filebeat.yml indentations).*
+
+---
+
+## 📊 6. See it in Kibana
+
+1.  Open your browser: `http://localhost:5601`
+2.  Go to **Stack Management** (Menu on left).
+3.  Click **Data Views** -> **Create Data View**.
+4.  **Name:** `SupplyChain Logs`
+5.  **Index Pattern:** `supplychainx-*` (The `*` means "match anything that starts with this").
+6.  **Timestamp:** Select `@timestamp`.
+7.  Click **Save**.
+8.  Go to **Discover** (Menu on left).
+
+🎉 **Done.** You should see your logs.
 
 ```Url
 https://freedium-mirror.cfd/https://medium.com/@ankitmahala07/complete-beginners-guide-setup-elk-stack-elasticsearch-logstash-kibana-spring-boot-27d988a156dc
