@@ -242,3 +242,53 @@ docker logs filebeat --tail 10
 ```Url
 https://freedium-mirror.cfd/https://medium.com/@ankitmahala07/complete-beginners-guide-setup-elk-stack-elasticsearch-logstash-kibana-spring-boot-27d988a156dc
 ```
+
+
+
+##  Filebeat & Docker Logs Issue
+
+During the development of this project, I faced a **significant issue** with collecting logs from the Spring Boot application running inside Docker using **Filebeat**. The problem took **3 sessions of 6 hours each** to debug and resolve.  
+
+### **The Problem**
+
+Filebeat reads Docker container logs using the **Docker API**. Each version of Docker exposes a specific version of the API.  
+
+- If Filebeat uses a **different Docker API version** than what your Docker Engine exposes, it **cannot read the logs**, even if your containers are running correctly.  
+- This caused Filebeat to report **"Enabled inputs: 0"**, meaning it found no logs to process.
+
+### **Root Cause**
+
+- Filebeat defaults to a Docker API version that might **not match your Docker Engine version**.  
+- The application logs were correctly written to the console (STDOUT), but Filebeat could not capture them due to this mismatch.  
+
+### **Best Practice**
+
+- **Always write logs to the console (STDOUT/STDERR)** inside Docker containers.  
+- Let Docker handle writing JSON log files in `/var/lib/docker/containers/`.  
+- Filebeat reads these files automatically.  
+- Avoid writing logs directly to files inside containers unless you mount volumes explicitly.
+
+### **The Fix**
+
+To fix the issue, we **explicitly forced Filebeat to use the correct Docker API version**:
+
+```yaml
+filebeat:
+  image: docker.elastic.co/beats/filebeat:8.11.1
+  container_name: filebeat
+  user: root
+  command: 
+    - -e
+    - --strict.perms=false
+    - -c
+    - /usr/share/filebeat/filebeat.yml
+  environment:
+    - DOCKER_API_VERSION=1.44  # <--- Force correct Docker API version
+  volumes:
+    - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+    - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+  depends_on:
+    - logstash
+  networks:
+    - supplychainx-network
