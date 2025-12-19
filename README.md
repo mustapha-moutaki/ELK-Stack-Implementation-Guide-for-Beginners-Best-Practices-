@@ -28,37 +28,109 @@ This file starts all the servers.
 version: '3.8'
 
 services:
-  # --- The Database (Brain) ---
+  # ---------------------------------------------------
+  # DATABASE
+  # ---------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: supplychainx-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: db here
+      POSTGRES_USER: userhere
+      POSTGRES_PASSWORD: passwordhere
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data     # Persist DB
+    networks:
+      - supplychainx-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplychainx_user -d supplychainx_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------
+  # SPRING BOOT APP
+  # ---------------------------------------------------
+  app:
+    build: .
+    container_name: supplychainx-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dbname
+      SPRING_DATASOURCE_USERNAME: username
+      SPRING_DATASOURCE_PASSWORD: password
+    labels:
+      - "co.elastic.logs/enabled=true"              # Enable Filebeat
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - supplychainx-network
+
+  # ---------------------------------------------------
+  # ELASTICSEARCH
+  # ---------------------------------------------------
+#  elasticsearch:
+#    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+#    container_name: elasticsearch
+#    environment:
+#      - discovery.type=single-node                 # Dev mode
+#      - xpack.security.enabled=false
+#      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+#    ports:
+#      - "9200:9200"
+#    volumes:
+#      - elasticsearch-data:/usr/share/elasticsearch/data
+#    networks:
+#      - supplychainx-network
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
     container_name: elasticsearch
     environment:
-      - discovery.type=single-node         # Just one node, keep it simple
-      - xpack.security.enabled=false       # No password needed (for dev)
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m     # Don't let Java eat all my RAM
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     ports:
       - "9200:9200"
-    volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
-      - elk-net
+      - supplychainx-network
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9200 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
-  # --- The Middle Man ---
+  # ---------------------------------------------------
+  # LOGSTASH
+  # ---------------------------------------------------
   logstash:
     image: docker.elastic.co/logstash/logstash:8.11.1
     container_name: logstash
     volumes:
-      # Read the config files from my computer
-      - ./logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+      - ./logstash.yml:/usr/share/logstash/config/logstash.yml:ro   # Root file
       - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
     ports:
       - "5000:5000"
+      - "9600:9600"
+    networks:
+      - supplychainx-network
     depends_on:
       - elasticsearch
-    networks:
-      - elk-net
 
-  # --- The Dashboard (UI) ---
+  # ---------------------------------------------------
+  # KIBANA
+  # ---------------------------------------------------
   kibana:
     image: docker.elastic.co/kibana/kibana:8.11.1
     container_name: kibana
@@ -66,34 +138,59 @@ services:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
     ports:
       - "5601:5601"
+    networks:
+      - supplychainx-network
     depends_on:
       - elasticsearch
-    networks:
-      - elk-net
 
-  # --- The Log Shipper (Problem Child) ---
+  # ---------------------------------------------------
+  # FILEBEAT
+  # ---------------------------------------------------
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.11.1
     container_name: filebeat
-    user: root  # Run as root so we don't get 'Permission Denied' errors
-    # -e is crucial! It lets us see logs in the console to debug
-    command: [ "-e", "--strict.perms=false" ] 
+    user: root # neccessery for reading form  /var/lib/docker
+  # we tell filebeat we use a custome file
+    command:
+      - -e
+      - --strict.perms=false
+      - -c
+      - /usr/share/filebeat/filebeat.yml
+    environment:
+      - DOCKER_API_VERSION=1.44
     volumes:
+
       - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
-      # Give access to Docker logs on the host
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - logstash
     networks:
-      - elk-net
+      - supplychainx-network
+#  filebeat:
+#    image: docker.elastic.co/beats/filebeat:8.11.1
+#    container_name: filebeat
+#    user: root
+#    # ADD "-e" HERE. This enables logging to the console.
+#    command: [ "-e", "--strict.perms=false" ]
+#    volumes:
+#      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+#      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+#      - /var/run/docker.sock:/var/run/docker.sock:ro
+#    depends_on:
+#      - logstash
+#    networks:
+#      - supplychainx-network
+
 
 volumes:
+  postgres_data:
   elasticsearch-data:
 
 networks:
-  elk-net:
+  supplychainx-network:
     driver: bridge
+
 ```
 
 ### B. filebeat.yml
