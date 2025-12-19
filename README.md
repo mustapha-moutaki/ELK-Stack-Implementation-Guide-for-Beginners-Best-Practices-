@@ -197,50 +197,46 @@ networks:
 This tells Filebeat *where* to look. We use the "Catch-All" method because it actually works.
 
 ```yaml
-filebeat.inputs:
-  - type: container
-    enabled: true
-    paths:
-      # Look everywhere. Don't be blind.
-      - /var/lib/docker/containers/*/*.log
-    processors:
-      # Add container names so I know which app crashed
-      - add_docker_metadata:
-          host: "unix:///var/run/docker.sock"
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      hints.enabled: true
+      hints.default_config:
+        type: container
+        paths:
+          - /var/lib/docker/containers/${data.container.id}/*.log
 
-# Don't spam my disk with filebeat's own logs
-logging.level: info
-logging.to_files: false
-
-# Send everything to Logstash, not Elasticsearch directly
 output.logstash:
   hosts: ["logstash:5000"]
+
+logging.level: info
 ```
 
 ### C. logstash.conf
 This receives the data and names the index.
 
 ```ruby
-input {
-  # Listen for Filebeat on port 5000
+iinput {
   beats {
     port => 5000
   }
 }
 
 filter {
-  # If I need to change data later, I'll do it here. 
-  # For now, just pass it through.
+  # if the app works it send json String inside message filed
+  json {
+    source => "message"
+    skip_on_invalid_json => true
+    # remove_field => ["message"]
+  }
 }
 
 output {
   elasticsearch {
     hosts => ["http://elasticsearch:9200"]
-    # Make the index name match my project (supplychainx-DATE)
-    index => "supplychainx-%{+YYYY.MM.dd}" 
+    index => "supplychainx-%{+YYYY.MM.dd}"
   }
-  
-  # Print to console so I can see if it's actually alive
+  # Important: this display all messages in the terminal that storing in the logstash
   stdout { codec => rubydebug }
 }
 ```
@@ -249,20 +245,28 @@ output {
 System settings.
 
 ```yaml
-http.host: "0.0.0.0"            # Listen on all interfaces
-xpack.monitoring.enabled: false # Turn off extra monitoring features
+http.host: "0.0.0.0"
+log.level: info
+xpack.monitoring.enabled: false
 ```
 
-### E. Spring Boot (`application.yml`)
+### E. Spring Boot (`application-docker.yml`)
 Make your Java app talk in JSON so ELK understands it easily.
 
 ```yaml
 logging:
+ # disable writing because we use docker envirement
+  # file:
+  #   name: ./logs/supplychainx.log
+  
   level:
     root: INFO
+    org.supplychain: DEBUG # to follow app details
+
   pattern:
-    # Print JSON. It's ugly for humans but computers love it.
-    console: '{"@timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}", "level":"%p", "logger":"%c", "message":"%m"}'
+    # Important: tell the consoles to print json manually
+
+    console: '{"@timestamp":"%d{yyyy-MM-dd''T''HH:mm:ss.SSSZ}", "level":"%p", "logger":"%c", "service":"supplychainx", "message":"%m"}%n'
 ```
 
 ---
