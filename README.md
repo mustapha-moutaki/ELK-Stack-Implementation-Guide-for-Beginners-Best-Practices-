@@ -46,7 +46,7 @@ services:
     networks:
       - supplychainx-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U supplychainx_user -d supplychainx_db"]
+      test: ["CMD-SHELL", "pg_isready -U db_user -d db_name"]
       interval: 10s
       timeout: 5s
       retries: 5
